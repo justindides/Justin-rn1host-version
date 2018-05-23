@@ -160,7 +160,7 @@ int run_search(int32_t, int32_t, int, int);
 int rerun_search(void);
 void send_route_end_status(uint8_t);
 void thread_management_before_running_cmd(unsigned char, thread_struct**);
-void thread_management_after_running_cmd(thread_struct**);
+int thread_management_after_running_cmd(thread_struct**);
 
 
 
@@ -435,80 +435,6 @@ void* main_thread()
 
 
 		 // /pthread_join(thread_main, NULL);
-
-
-
-
-		// Don't know what to do with that following part yet. I guess I'll put this in the handle_mapping() funion.
-		static uint8_t prev_keep_position;
-		if(!state_vect.v.keep_position && prev_keep_position)
-			release_motors();
-		prev_keep_position = state_vect.v.keep_position;
-
-		static uint8_t prev_autonomous;
-		if(state_vect.v.command_source && !prev_autonomous)
-		{
-			daiju_mode(0);
-			routing_set_world(&world);
-			start_automapping_skip_compass();
-			state_vect.v.mapping_collisions = state_vect.v.mapping_3d = state_vect.v.mapping_2d = state_vect.v.loca_3d = state_vect.v.loca_2d = 1;
-		}
-		if(!state_vect.v.command_source && prev_autonomous)
-		{
-			stop_automapping();
-		}
-		prev_autonomous = state_vect.v.command_source;
-
-		static int keepalive_cnt = 0;
-		if(++keepalive_cnt > 500)
-		{
-			keepalive_cnt = 0;
-			if(state_vect.v.keep_position)
-				send_keepalive();
-			else
-				release_motors();
-		}
-
-
-		sonar_point_t* p_son;
-		if( (p_son = get_sonar()) )
-		{
-			if(tcp_client_sock >= 0) tcp_send_sonar(p_son);
-			if(state_vect.v.mapping_2d)
-				map_sonars(&world, 1, p_son);
-		}
-
-		static double prev_sync = 0;
-		double stamp;
-
-		double write_interval = 30.0;
-		if(tcp_client_sock >= 0)
-			write_interval = 7.0;
-
-		if( (stamp=subsec_timestamp()) > prev_sync+write_interval)
-		{
-			prev_sync = stamp;
-
-			int idx_x, idx_y, offs_x, offs_y;
-			page_coords(cur_x, cur_y, &idx_x, &idx_y, &offs_x, &offs_y);
-
-			// Do some "garbage collection" by disk-syncing and deallocating far-away map pages.
-			unload_map_pages(&world, idx_x, idx_y);
-
-			// Sync all changed map pages to disk
-			if(save_map_pages(&world))
-			{
-				if(tcp_client_sock >= 0) tcp_send_sync_request();
-			}
-			if(tcp_client_sock >= 0)
-			{
-				tcp_send_battery();
-				tcp_send_statevect();
-			}
-
-			fflush(stdout); // syncs log file.
-
-		}
 
 	}
 
@@ -1624,6 +1550,78 @@ void mapping_handling(thread_struct *p_host_t)
 
 		lidar_handling();
 
+		static uint8_t prev_keep_position;
+		if(!state_vect.v.keep_position && prev_keep_position)
+			release_motors();
+		prev_keep_position = state_vect.v.keep_position;
+
+		static uint8_t prev_autonomous;
+		if(state_vect.v.command_source && !prev_autonomous)
+		{
+			daiju_mode(0);
+			routing_set_world(&world);
+			start_automapping_skip_compass();
+			state_vect.v.mapping_collisions = state_vect.v.mapping_3d = state_vect.v.mapping_2d = state_vect.v.loca_3d = state_vect.v.loca_2d = 1;
+		}
+		if(!state_vect.v.command_source && prev_autonomous)
+		{
+			stop_automapping();
+		}
+		prev_autonomous = state_vect.v.command_source;
+
+		static int keepalive_cnt = 0;
+		if(++keepalive_cnt > 500)
+		{
+			keepalive_cnt = 0;
+			if(state_vect.v.keep_position)
+				send_keepalive();
+			else
+				release_motors();
+		}
+
+
+		sonar_point_t* p_son;
+		if( (p_son = get_sonar()) )
+		{
+			if(tcp_client_sock >= 0) tcp_send_sonar(p_son);
+			if(state_vect.v.mapping_2d)
+				map_sonars(&world, 1, p_son);
+		}
+
+		static double prev_sync = 0;
+		double stamp;
+
+		double write_interval = 30.0;
+		if(tcp_client_sock >= 0)
+			write_interval = 7.0;
+
+		if( (stamp=subsec_timestamp()) > prev_sync+write_interval)
+		{
+			prev_sync = stamp;
+
+			int idx_x, idx_y, offs_x, offs_y;
+			page_coords(cur_x, cur_y, &idx_x, &idx_y, &offs_x, &offs_y);
+
+			// Do some "garbage collection" by disk-syncing and deallocating far-away map pages.
+			unload_map_pages(&world, idx_x, idx_y);
+
+			// Sync all changed map pages to disk
+			if(save_map_pages(&world))
+			{
+				if(tcp_client_sock >= 0) tcp_send_sync_request();
+			}
+			if(tcp_client_sock >= 0)
+			{
+				tcp_send_battery();
+				tcp_send_statevect();
+			}
+
+			fflush(stdout); // syncs log file.
+
+		}
+
+
+
 		if(p_host_t->waiting_for_map_to_end)	// If a command is waiting to be executed after the end of this loop. Wroks with the thread_management.. functions
 		{
 			p_host_t->map_thread_on_pause = 1;	// The thread has to be on pause while we run teh command.
@@ -2534,14 +2532,14 @@ void cmd_from_client_to_host(int cmd, thread_struct **pp_host_t)
 // Some commands are more important than others and should be run asap, that leads to cancel the running threads concerned by this comand.
 void thread_management_before_running_cmd(unsigned char priority_bits,thread_struct** pp_host_t)
 {
-	int ret; 
+	// int ret; 
 	
 	// Mapping thread managing
 	if((priority_bits & 0x01) == 1)  // If the new comand concerns the Mapping thread and has priority over what the robot is already doing.
 	{
 		if((**pp_host_t).map_thread_cancel_state == 1)	// The map_thread_cancel_state defines if the mapping thread can be canceled. If not, we ll wait until the end of the thread loop.
 		{
-			if(pthread_cancel(&(**pp_host_t).thread_mapping) != 0)	// When the cancel is successfull, it returns 0.
+			if(pthread_cancel((**pp_host_t).thread_mapping) != 0)	// When the cancel is successfull, it returns 0.
 			{
 				printf("Error canceling mappping Thread.");
 			}
@@ -2586,7 +2584,7 @@ void thread_management_before_running_cmd(unsigned char priority_bits,thread_str
 	{
 		if((**pp_host_t).nav_thread_cancel_state == 1)	
 		{
-			if(pthread_cancel(&(**pp_host_t).thread_navigation) != 0)
+			if(pthread_cancel((**pp_host_t).thread_navigation) != 0)
 			{
 				printf("Error canceling navigation Thread.");
 			}
@@ -2629,30 +2627,42 @@ void thread_management_before_running_cmd(unsigned char priority_bits,thread_str
 
 }
 
-void thread_management_after_running_cmd(thread_struct** pp_host_t)
+int thread_management_after_running_cmd(thread_struct** pp_host_t)
 {
-	if(&(**pp_host_t).map_thread_on_pause == 1)
+	int ret;	
+	
+	if((**pp_host_t).map_thread_on_pause == 1)
 	{
 		(**pp_host_t).map_thread_on_pause = 0;
 		pthread_cond_signal(&(**pp_host_t).cond_continue_map);
 	}
 
-	if(&(**pp_host_t).nav_thread_on_pause == 1)
+	if((**pp_host_t).nav_thread_on_pause == 1)
 	{
 		(**pp_host_t).nav_thread_on_pause = 0;
 		pthread_cond_signal(&(**pp_host_t).cond_continue_nav);
 	}
 
-	if(&(**pp_host_t).map_thread_were_canceled == 1)
+	if((**pp_host_t).map_thread_were_canceled == 1)
 	{
 		(**pp_host_t).map_thread_on_pause = 0;
-		pthread_cond_signal(&(**pp_host_t).cond_continue_map);
+		// Mapping Thread creation
+		if((ret = pthread_create(&(**pp_host_t).thread_mapping, NULL, mapping_handling, &(**pp_host_t))) != 0)  // I have doubt if the parameter is right
+		{
+			printf("ERROR: maping thread creation failed, ret = %d\n", ret);
+			return -1;
+		}	
 	}
 
-	if(&(**pp_host_t).nav_thread_were_canceled == 1)
+	if((**pp_host_t).nav_thread_were_canceled == 1)
 	{
 		(**pp_host_t).nav_thread_on_pause = 0;
-		pthread_cond_signal(&(**pp_host_t).cond_continue_nav);
+		// Navigation Thread creation
+		if((ret = pthread_create(&(**pp_host_t).thread_navigation, NULL, route_fsm, &(**pp_host_t))) != 0) 
+		{
+			printf("ERROR: navigation thread creation failed, ret = %d\n", ret);
+			return -1;
+		};
 	}
 
 }
