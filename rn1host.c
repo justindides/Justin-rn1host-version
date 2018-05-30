@@ -96,14 +96,39 @@
 #define DEFAULT_SPEEDLIM 45
 #define MAX_CONFIGURABLE_SPEEDLIM 70
 
+/*
+	 Our task here is to restructure the existing rn1host code. The main thread should be divided in different 
+ sub-threads : Mapping, Routing, Navigation and Communication. To reach this, we have first divided the main 
+ thread in different functions, created from the existing code in the main thread. It was just a work of Copy-Paste. 
+ Like this, the main thread is easier to read and to modify. These functions are made so they can be used as the 
+ starting point of the new threads. The point is to always have a version that compiles. The final goal is to have 
+ the same robot behaviour than before but with the possibility to modify and add new things to the code easier.
+ The new threads starting points are route_fsm : navigation, routing_thread : routing, mapping_handling : mapping,
+ communication_handling : communication. Routing_thread, mapping_handling and communication_handling are new functions.
 
-// Our task here is to restructure the existing rn1host code. The main thread should be divided in different sub-threads : Mapping, Routing, Navigation and Communication. To reach this, we have first divided the main thread in different functions, created from 
-// the existing code in the main thread. It was just a work of Copy-Paste. Like this, the main thread is easier to read and to modify. These functions are made so they can be used as the starting point of the new threads. Right now, the multithreading has not been  
-// developped yet (Still, you can find some of the future changes written as commentaries). This version sompiles, and should not modify any behaviour in the robot. That's why we commit it, as a saving point in the developpement before going further in the multi-
-// -threading management.
-// There are way more informations on this drive : https://docs.google.com/document/d/11pe03oysKdM3qin7-PSHSF_nNU7izzTMOuq2cZETWFc/edit#   . I don't know if you can access it... Otherwise send me an email at justindides@hotmail.fr so I can give you the access to it or 
-// to answer further questions.
+Shared memory acces :
+	 Right now on this version, the restructuration is done and it should compile but it surely won't work on the robot 
+ since the different threads access to shared memory is not protected yet. There should be some conflict between the threads
+ to read or wright variables at the same time. I believe the TCP/IP and UART buffers or the global variables such as world w
+ could meet these problems. Mutex or semaphores can be used to protect memory areas. 
 
+ 	Right now, the navigation thread and routing thread wait for eachother to run, in a way that the navigation asks for a routing
+ when it is needed. So there shouldn't be conflict between those. On the other hand, the mapping thread is running non stop in an
+ infinite loop, so there could be conflicts between this one and the others. 
+	
+	 Concerning the communication thread, it concerns the incomming orders from the developer console commands or the user commands from
+ the client. This thread shouldn't run continuously and wait for a command to come in to run it. But, when a command comes in concerning 
+ the robot behaviour like its navigation, routing or mapping we should stop the concerned threads to run the command. The question is,
+ should we cancel the threads concerned by a command or should we wait until the end of their loops. The answer concerns the priority 
+ of the comming order, if it is a critical order like "Stop", or "go there manually", we should do this immediatly and so cancel the
+ thread, run the comand (paramaters changes ect...), then recreate the thread and continue. If the order is not so important, we should 
+ wait until the end of the concerned thread loop. Incoming message priority doesn't exist yet, but the refactoring has been done like
+ if 3 priority bits existed just to give an idea of how the threads should be managed when a command comes in.
+ 
+	 There are way more informations on this drive : https://docs.google.com/document/d/11pe03oysKdM3qin7-PSHSF_nNU7izzTMOuq2cZETWFc/edit#  
+ I don't know if you can access it... Otherwise send me an email at justindides@hotmail.fr so I can give you the access to it or 
+ to answer further questions.
+*/
 
 
 /* Justin´s code */
@@ -124,7 +149,7 @@ typedef struct
 	
 	pthread_cond_t cond_continue_map, cond_continue_rout, cond_continue_nav;
 
-	pthread_cond_t cond_routing_done, cond_mapping_done, cond_navigation_done;	// These conditions are signaled at the end of the Threads loop.
+	pthread_cond_t cond_routing_done, cond_mapping_done, cond_navigation_done; // These conditions are signaled at the end of the Threads loop.
 	
 	int dest_x, dest_y, dont_map_lidars, no_tight;
 	int no_route_found;  // 1 = No route was found, 0 = A route has been found 
@@ -144,7 +169,7 @@ thread_struct;
 
 
 
-/*  My functions declaration */
+/*  functions declaration */
 int find_charger_procedure(thread_struct**);
 void main_init(void);
 void communication_handling(thread_struct*);  // Starting point of the communication thread
@@ -536,7 +561,7 @@ void main_init(void)
 /***********************************************************************************************************************************************************************************************************************************************************************/
 /***********************************************************************************************************************************************************************************************************************************************************************/
 
-											// NAVIGATION THREAD
+					// NAVIGATION THREAD
 
 /*
 *
@@ -1289,11 +1314,11 @@ void do_live_obstacle_checking()
 	}
 }
 
-																// End of NAVIGATION
+				// End of NAVIGATION
 /***********************************************************************************************************************************************************************************************************************************************************************/
 /***********************************************************************************************************************************************************************************************************************************************************************/
 
-																// ROUTING THREAD
+				// ROUTING THREAD
 
 
 void routing_thread(thread_struct *p_host_t)
@@ -1423,11 +1448,11 @@ int rerun_search()
 
 
 
-																//end of ROUTING
+				//end of ROUTING
 /***********************************************************************************************************************************************************************************************************************************************************************/
 /***********************************************************************************************************************************************************************************************************************************************************************/
 
-																// MAPPING THREAD
+				// MAPPING THREAD
 
 // Handles the mapping. Mainly, it calls autofsm(), tof_handling() and lidar_handling().
 void mapping_handling(thread_struct *p_host_t)
@@ -1900,7 +1925,7 @@ void lidar_handling(void)
 
 /***********************************************************************************************************************************************************************************************************************************************************************/
 /***********************************************************************************************************************************************************************************************************************************************************************/
-														// COMUNICATION THREAD
+				// COMUNICATION THREAD
 
 
 /* This function handles both communications : 
@@ -2667,9 +2692,9 @@ int thread_management_after_running_cmd(thread_struct** pp_host_t)
 
 }
 
-																//End of COMMUNICATION
+				//End of COMMUNICATION
 /*************************************************************************************************************************************************************************************************************************************************************************/
 /*************************************************************************************************************************************************************************************************************************************************************************/
-																// The END ?
+				// The END ?
 
 
