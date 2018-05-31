@@ -131,8 +131,6 @@ Shared memory acces :
 */
 
 
-/* Justin´s code */
-
 // Threading structure. It contains every mutex or condition that we use to manage the multithreading.
 
 
@@ -142,6 +140,7 @@ typedef struct
 	pthread_t thread_mapping; 
 	pthread_t thread_routing;
  	pthread_t thread_communication;
+	pthread_t thread_tof, thread_tof2;
 
 	pthread_mutex_t mutex_token_routing;  // This mutex define what thread is running between the navigation and the routing. This can only work in our case where we only have one routing thread.
 
@@ -378,7 +377,6 @@ void save_pointcloud(int n_points, xyz_t* cloud)
 }
 
 
-
 int cal_x_d_offset = 0;
 int cal_y_d_offset = 0;
 float cal_x_offset = 40.0;
@@ -395,107 +393,86 @@ int flush_3dtof = 0;   // Put in global because of the main division.
 int lidar_ignore_over = 0;   // Put in global because of the main division.
 int find_charger_state = 0;   // To complicated to use it with pointers, way easier in global. This is the finding charger procedure state. 0 = Not looking for the charger at the moment.
 
-void* main_thread()
-{
-	
-	int ret;
-
-	thread_struct host_t = {
-				   	.mutex_token_routing = PTHREAD_MUTEX_INITIALIZER,
-				  	.cond_need_routing = PTHREAD_COND_INITIALIZER,
-					.cond_continue_map = PTHREAD_COND_INITIALIZER, .cond_continue_rout = PTHREAD_COND_INITIALIZER, .cond_continue_nav = PTHREAD_COND_INITIALIZER,
-				  	.cond_routing_done = PTHREAD_COND_INITIALIZER, .cond_mapping_done = PTHREAD_COND_INITIALIZER, .cond_navigation_done = PTHREAD_COND_INITIALIZER,
-					.dest_x = 0, .dest_y = 0, .dont_map_lidars = 0, .no_tight= 1,
-					.no_route_found = 1,  // 1 = No route was found, 0 = A route has been found 
-
-
-					.map_thread_cancel_state = 1, .rout_thread_cancel_state = 1, .nav_thread_cancel_state = 1,	// Define if the threads can be canceled by pthread_cancel() : 1 = yes, 0 = no, can't be canceled at the moment.
-	
-					.map_thread_were_canceled = 0, .rout_thread_were_canceled = 0, .nav_thread_were_canceled = 0,	// Defines if the thread has been canceled and should be recreated after running a command : 1 = canceled, 0 = not_canceled 
-
-					.waiting_for_map_to_end = 0, .waiting_for_rout_to_end = 0, .waiting_for_nav_to_end = 0,	// Flags put to 1 when we are waiting the end of a thread loop.	
-
-					.mutex_waiting_map_t = PTHREAD_MUTEX_INITIALIZER, .mutex_waiting_rout_t = PTHREAD_MUTEX_INITIALIZER, .mutex_waiting_nav_t = PTHREAD_MUTEX_INITIALIZER,   
-
-					.map_thread_on_pause = 0, .rout_thread_on_pause = 0, .nav_thread_on_pause = 0,	// When we pause a thread to run a command, those flags are put to 1.
-
-				};   
-
-	main_init();	// Init variables and communication
-		
-	while(1)
-	{
-
-		//communication_handling(&host_t);
-
-		// Communication thread : Handle communications CLIENT/SERVER <-> HOST and devs comamnds from standard input. Init the UART as well.
-		if( (ret = pthread_create(&host_t.thread_communication, NULL, communication_handling, &host_t )) !=0 )
-		{
-			printf("ERROR: communication thread creation failed, ret = %d\n", ret);
-			return -1;
-		}
-			
-		// Mapping Thread 
-		if( (ret = pthread_create(&host_t.thread_mapping, NULL, mapping_handling, &host_t)) != 0) 
-		{
-			printf("ERROR: maping thread creation failed, ret = %d\n", ret);
-			return -1;
-		}		
-
-		// Navigation Thread
-		if( (ret = pthread_create(&host_t.thread_navigation, NULL, route_fsm, &host_t)) != 0) 
-		{
-			printf("ERROR: navigation thread creation failed, ret = %d\n", ret);
-			return -1;
-		}
-
-		// Routing thread
-		if( (ret = pthread_create(&host_t.thread_routing, NULL, routing_thread, &host_t)) != 0) 
-		{
-			printf("ERROR: routing thread creation failed, ret = %d\n", ret);
-			return -1;
-		}		
-		   
-		//mapping_handling();
-
-
-		 // /pthread_join(thread_main, NULL);
-
-	}
-
-#ifdef PULUTOF1
-	request_tof_quit();
-#endif
-
-	return NULL;
-}
-
-
 #ifdef PULUTOF1
 void* start_tof(void*);
 #endif
 
 int main(int argc, char** argv)
 {
-	pthread_t thread_main, thread_tof, thread_tof2;
 
 	int ret;
 
-	if( (ret = pthread_create(&thread_main, NULL, main_thread, NULL)) )
+	thread_struct host_t = 
 	{
-		printf("ERROR: main thread creation, ret = %d\n", ret);
+		.mutex_token_routing = PTHREAD_MUTEX_INITIALIZER,
+		.cond_need_routing = PTHREAD_COND_INITIALIZER,
+		.cond_continue_map = PTHREAD_COND_INITIALIZER, .cond_continue_rout = PTHREAD_COND_INITIALIZER, .cond_continue_nav = PTHREAD_COND_INITIALIZER,
+		.cond_routing_done = PTHREAD_COND_INITIALIZER, .cond_mapping_done = PTHREAD_COND_INITIALIZER, .cond_navigation_done = PTHREAD_COND_INITIALIZER,
+		.dest_x = 0, .dest_y = 0, .dont_map_lidars = 0, .no_tight= 1,
+		.no_route_found = 1,  // 1 = No route was found, 0 = A route has been found 
+
+
+		.map_thread_cancel_state = 1, .rout_thread_cancel_state = 1, .nav_thread_cancel_state = 1,	// Define if the threads can be canceled by pthread_cancel() : 1 = yes, 0 = no, can't
+														// be canceled at the moment.
+	
+		.map_thread_were_canceled = 0, .rout_thread_were_canceled = 0, .nav_thread_were_canceled = 0,	// Defines if the thread has been canceled and should be recreated after running a 
+														// command : 1 = canceled, 0 = not_canceled 
+
+		.waiting_for_map_to_end = 0, .waiting_for_rout_to_end = 0, .waiting_for_nav_to_end = 0,	// Flags put to 1 when we are waiting the end of a thread loop.	
+
+		.mutex_waiting_map_t = PTHREAD_MUTEX_INITIALIZER, .mutex_waiting_rout_t = PTHREAD_MUTEX_INITIALIZER, .mutex_waiting_nav_t = PTHREAD_MUTEX_INITIALIZER,   
+
+		.map_thread_on_pause = 0, .rout_thread_on_pause = 0, .nav_thread_on_pause = 0,	// When we pause a thread to run a command, those flags are put to 1.
+
+	};   
+
+	
+	main_init();	// Init variables and communication
+	
+
+	//communication_handling(&host_t);
+
+	// Communication thread : Handle communications CLIENT/SERVER <-> HOST and devs comamnds from standard input. Init the UART as well.
+	if( (ret = pthread_create(&host_t.thread_communication, NULL, communication_handling, &host_t )) !=0 )
+	{
+		printf("ERROR: communication thread creation failed, ret = %d\n", ret);
+		return -1;
+	}
+		
+	// Mapping Thread 
+	if( (ret = pthread_create(&host_t.thread_mapping, NULL, mapping_handling, &host_t)) != 0) 
+	{
+		printf("ERROR: maping thread creation failed, ret = %d\n", ret);
+		return -1;
+	}		
+
+	// Navigation Thread
+	if( (ret = pthread_create(&host_t.thread_navigation, NULL, route_fsm, &host_t)) != 0) 
+	{
+		printf("ERROR: navigation thread creation failed, ret = %d\n", ret);
 		return -1;
 	}
 
+	// Routing thread
+	if( (ret = pthread_create(&host_t.thread_routing, NULL, routing_thread, &host_t)) != 0) 
+	{
+		printf("ERROR: routing thread creation failed, ret = %d\n", ret);
+		return -1;
+	}		
+	   
+	//mapping_handling();
+
+
+
 #ifdef PULUTOF1
-	if( (ret = pthread_create(&thread_tof, NULL, pulutof_poll_thread, NULL)) )
+	if( (ret = pthread_create(&host_t.thread_tof, NULL, pulutof_poll_thread, NULL)) )
 	{
 		printf("ERROR: tof3d access thread creation, ret = %d\n", ret);
 		return -1;
 	}
 
 	#ifndef PULUTOF1_GIVE_RAWS
-		if( (ret = pthread_create(&thread_tof2, NULL, pulutof_processing_thread, NULL)) )
+		if( (ret = pthread_create(&host_t.thread_tof2, NULL, pulutof_processing_thread, NULL)) )
 		{
 			printf("ERROR: tof3d processing thread creation, ret = %d\n", ret);
 			return -1;
@@ -503,11 +480,15 @@ int main(int argc, char** argv)
 	#endif
 #endif
 
-	pthread_join(thread_main, NULL);
+	// pthread_join(thread_main, NULL);
 
 #ifdef PULUTOF1
 	pthread_join(thread_tof, NULL);
 	pthread_join(thread_tof2, NULL);
+#endif
+
+#ifdef PULUTOF1		// This shouldn t be there
+	request_tof_quit();
 #endif
 
 	return retval;
@@ -1948,6 +1929,8 @@ void communication_handling(thread_struct *p_host_t)
 There are still 5 bits available on that Bytes that could be used for future Threads. 
 */
 
+	while(1)
+	{
 
 	// Calculate fd_set size (biggest fd+1)
 		int fds_size = 	
@@ -1979,6 +1962,10 @@ There are still 5 bits available on that Bytes that could be used for future Thr
 			fprintf(stderr, "select() error %d", errno);
 			return NULL;
 		}
+
+
+// *********************** Wait for a command***************************************
+
 
 
 		if(FD_ISSET(STDIN_FILENO, &fds))	// 1) Console commands
@@ -2131,6 +2118,7 @@ There are still 5 bits available on that Bytes that could be used for future Thr
 		}
 		else
 			feedback_stop_flags_processed = 0;
+	} // end of while(1) loop
 
 }
 
