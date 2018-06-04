@@ -134,6 +134,7 @@ Shared memory acces :
 // Threading structure. It contains every mutex or condition that we use to manage the multithreading.
 
 
+
 typedef struct
 {
 	pthread_t thread_navigation; 	// Threads declaration
@@ -377,6 +378,7 @@ void save_pointcloud(int n_points, xyz_t* cloud)
 }
 
 
+
 int cal_x_d_offset = 0;
 int cal_y_d_offset = 0;
 float cal_x_offset = 40.0;
@@ -480,7 +482,7 @@ int main(int argc, char** argv)
 	#endif
 #endif
 
-	// pthread_join(thread_main, NULL);
+	pthread_join(host_t.thread_communication, NULL); // This thread never end so this should block the main().
 
 #ifdef PULUTOF1
 	pthread_join(thread_tof, NULL);
@@ -1315,8 +1317,29 @@ void routing_thread(thread_struct *p_host_t)
 
 		printf("Routing done");
 
-		pthread_cond_signal(&p_host_t->cond_routing_done);
+		pthread_cond_signal(&p_host_t->cond_routing_done);	// We signal the routing is done. 
 		pthread_mutex_unlock(&p_host_t->mutex_token_routing);	
+
+		if(p_host_t->waiting_for_rout_to_end)	// If a command is waiting to be executed after the end of this loop. Wroks with the thread_management.. functions
+		{
+			p_host_t->rout_thread_on_pause = 1;	// The thread has to be on pause while we run teh command.
+
+			pthread_mutex_lock(&p_host_t->mutex_waiting_rout_t);				
+
+			while(p_host_t->waiting_for_rout_to_end)
+			{
+				pthread_cond_signal(&p_host_t->cond_routing_done);	// First, we signal the loop has ended
+			}
+			pthread_mutex_unlock(&p_host_t->mutex_waiting_rout_t);
+
+			sleep(1);
+	
+			pthread_mutex_lock(&p_host_t->mutex_waiting_rout_t);		
+			pthread_cond_wait(&p_host_t->cond_continue_rout, &p_host_t->mutex_waiting_rout_t);	// We wait for the command to be done. 
+			pthread_mutex_unlock(&p_host_t->mutex_waiting_rout_t);	
+		}
+
+		
 	}
 	return;
 } 
@@ -1971,7 +1994,7 @@ There are still 5 bits available on that Bytes that could be used for future Thr
 		if(FD_ISSET(STDIN_FILENO, &fds))	// 1) Console commands
 		{
 			int cmd = fgetc(stdin);
-	//		cmd_from_developer_to_host(cmd, &p_host_t);  // For some reason I cannot compile the code with this line
+	//		cmd_from_developer_to_host(cmd, &p_host_t);  // For some reason I cannot compile the code with this line...
 			
 
 #ifndef SIMULATE_SERIAL	
@@ -2006,7 +2029,7 @@ There are still 5 bits available on that Bytes that could be used for future Thr
 //			printf("Compass ang=%.1f deg\n", ANG32TOFDEG(cur_compass_ang));
 //		}
 
-		static int micronavi_stop_flags_printed = 0;		/****************MCU FEEBACK, A CHANGER DE PLACE ? ************************************************************************************************/
+		static int micronavi_stop_flags_printed = 0;
 
 		if(cmd_state == TCP_CR_DEST_MID)
 		{
@@ -2541,8 +2564,11 @@ void cmd_from_client_to_host(int cmd, thread_struct **pp_host_t)
 }
 
 
-// When a command comes in from the client, it will affect the nehaviour of the robot. We have to manage the thread to accomplish the task the user asked.
-// Some commands are more important than others and should be run asap, that leads to cancel the running threads concerned by this comand.
+// When a command comes in from the client, it is most of the time to affect the behaviour of the robot. We have to manage the thread(s) concerned by the command
+// to accomplish the task the user asked. 
+// Some commands are more important than others and should be run asap (They have a priority), that leads to cancel the running threads concerned by this comand.
+// If it is not critical to run the command immediatly, then we ll just wait until the concerned thread(s) end their main loop, stop it/them, 
+// run the command and then resume it/them.
 void thread_management_before_running_cmd(unsigned char priority_bits,thread_struct** pp_host_t)
 {
 	// int ret; 
@@ -2564,14 +2590,14 @@ void thread_management_before_running_cmd(unsigned char priority_bits,thread_str
 		}
 		else 
 		{
-			printf("The mapping Thread cannot be canceled now, we'll wait until it ends.");
-			(**pp_host_t).waiting_for_map_to_end = 1;	// This flag indicates we are waiting the end of the mapping thread loop.
-			
-			pthread_mutex_lock(&(**pp_host_t).mutex_waiting_map_t);
+			printf("The mapping Thread cannot be canceled now, we'll wait until it ends."); // If it cannot ne canceled
+			(**pp_host_t).waiting_for_map_to_end = 1;	// This flag indicates we are waiting the end of the mapping thread loop.	
+									// The flag is used at the end of the thread so it stops and send the "work done" signal
+			pthread_mutex_lock(&(**pp_host_t).mutex_waiting_map_t); // Waiting the signal that it has ended
 			pthread_cond_wait(&(**pp_host_t).cond_mapping_done, &(**pp_host_t).mutex_waiting_map_t);
 			
 			(**pp_host_t).waiting_for_map_to_end = 0;
-			
+
 			pthread_mutex_unlock(&(**pp_host_t).mutex_waiting_map_t);
 			
 			printf("Mapping thread loop has ended, now on pause, run the command and resume it.");
@@ -2580,13 +2606,14 @@ void thread_management_before_running_cmd(unsigned char priority_bits,thread_str
 	}
 	else	// If it has no priority, we'll wait until the end of the mapping thread
 	{
-		(**pp_host_t).waiting_for_map_to_end = 1;
+		(**pp_host_t).waiting_for_map_to_end = 1; // Flag up
 		
-		pthread_mutex_lock(&(**pp_host_t).mutex_waiting_map_t);
+		pthread_mutex_lock(&(**pp_host_t).mutex_waiting_map_t);	// Waiting the signal that it has ended
 		pthread_cond_wait(&(**pp_host_t).cond_mapping_done, &(**pp_host_t).mutex_waiting_map_t);
 		
 		(**pp_host_t).waiting_for_map_to_end = 0;
 		
+
 		pthread_mutex_unlock(&(**pp_host_t).mutex_waiting_map_t);
 		
 		printf("Mapping thread loop has ended, now on pause, run the command and resume it..");
@@ -2632,19 +2659,71 @@ void thread_management_before_running_cmd(unsigned char priority_bits,thread_str
 		
 		(**pp_host_t).waiting_for_nav_to_end = 0;
 		
+		(**pp_host_t).map_thread_on_pause = 1;
+
 		pthread_mutex_unlock(&(**pp_host_t).mutex_waiting_nav_t);
 		
-		printf("Mapping thread loop has ended, now on pause, run the command and resume it..");
+		printf("Navigation thread loop has ended, now on pause, run the command and resume it..");
+	}
+
+
+	// Routing thread managing
+	if((priority_bits & 0x01) == 1)  // Same as before but with the routing thread
+	{
+		if((**pp_host_t).rout_thread_cancel_state == 1)	// The routing_thread_cancel_state defines if the routing thread can be canceled. 
+		{						// If not, we ll wait until the end of the thread loop.
+			if(pthread_cancel((**pp_host_t).thread_routing) != 0)	// When the cancel is successfull, it returns 0.
+			{
+				printf("Error canceling routing Thread.");
+			}
+			else
+			{
+				(**pp_host_t).rout_thread_were_canceled = 1;
+				printf("Routing thread canceled successfully.");
+			}
+		}
+		else 
+		{
+			printf("The routing Thread cannot be canceled now, we'll wait until it ends."); // If it cannot ne canceled
+			(**pp_host_t).waiting_for_rout_to_end = 1;	// This flag indicates we are waiting the end of the routing thread loop.	
+									// The flag is used at the end of the thread so it stops and send the "work done" signal
+			pthread_mutex_lock(&(**pp_host_t).mutex_waiting_rout_t); // Waiting the signal that it has ended
+			pthread_cond_wait(&(**pp_host_t).cond_routing_done, &(**pp_host_t).mutex_waiting_rout_t);
+			
+			(**pp_host_t).waiting_for_rout_to_end = 0;
+
+			pthread_mutex_unlock(&(**pp_host_t).mutex_waiting_rout_t);
+			
+			printf("Routing thread loop has ended, now on pause, run the command and resume it.");
+		}
+
+	}
+	else	// If it has no priority, we'll wait until the end of the routing thread
+	{
+		(**pp_host_t).waiting_for_rout_to_end = 1; // Flag up
+		
+		pthread_mutex_lock(&(**pp_host_t).mutex_waiting_rout_t);	// Waiting the signal that it has ended
+		pthread_cond_wait(&(**pp_host_t).cond_routing_done, &(**pp_host_t).mutex_waiting_rout_t);
+		
+		(**pp_host_t).waiting_for_rout_to_end = 0;
+		
+
+		pthread_mutex_unlock(&(**pp_host_t).mutex_waiting_rout_t);
+		
+		printf("Routing thread loop has ended, now on pause, run the command and resume it..");
 	}
 	return;
 
 }
 
+
+// After running the command we have to remanage the threads according to what have been done before the command (thread_management_before_running_cmd())
+// If threads were canceled, then we recreate them, if some are on pause, we resume them.  
 int thread_management_after_running_cmd(thread_struct** pp_host_t)
 {
 	int ret;	
 	
-	if((**pp_host_t).map_thread_on_pause == 1)
+	if((**pp_host_t).map_thread_on_pause == 1)	// If one of the threads are on pause, we resume them.
 	{
 		(**pp_host_t).map_thread_on_pause = 0;
 		pthread_cond_signal(&(**pp_host_t).cond_continue_map);
@@ -2654,6 +2733,12 @@ int thread_management_after_running_cmd(thread_struct** pp_host_t)
 	{
 		(**pp_host_t).nav_thread_on_pause = 0;
 		pthread_cond_signal(&(**pp_host_t).cond_continue_nav);
+	}
+
+	if((**pp_host_t).rout_thread_on_pause == 1)
+	{
+		(**pp_host_t).rout_thread_on_pause = 0;
+		pthread_cond_signal(&(**pp_host_t).cond_continue_rout);
 	}
 
 	if((**pp_host_t).map_thread_were_canceled == 1)
@@ -2667,7 +2752,7 @@ int thread_management_after_running_cmd(thread_struct** pp_host_t)
 		}	
 	}
 
-	if((**pp_host_t).nav_thread_were_canceled == 1)
+	if((**pp_host_t).nav_thread_were_canceled == 1)		// If one of the threads were canceled, we recreate it.
 	{
 		(**pp_host_t).nav_thread_on_pause = 0;
 		// Navigation Thread creation
@@ -2676,6 +2761,17 @@ int thread_management_after_running_cmd(thread_struct** pp_host_t)
 			printf("ERROR: navigation thread creation failed, ret = %d\n", ret);
 			return -1;
 		};
+	}
+
+	if((**pp_host_t).rout_thread_were_canceled == 1)
+	{
+		(**pp_host_t).rout_thread_on_pause = 0;
+		// Routing Thread creation
+		if((ret = pthread_create(&(**pp_host_t).thread_routing, NULL, routing_thread, &(**pp_host_t))) != 0)  // I have doubt if the parameter is right
+		{
+			printf("ERROR: routing thread creation failed, ret = %d\n", ret);
+			return -1;
+		}	
 	}
 
 }

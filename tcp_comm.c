@@ -37,11 +37,14 @@
 #include <stropts.h>
 #include <sys/select.h>
 #include <sys/ioctl.h>
+#include <pthread.h>
 
 #include "tcp_parser.h"
 
 int tcp_listener_sock;
 int tcp_client_sock = -1; // One client at the time is allowed.
+
+pthread_mutex_t mutex_buf_tcp = PTHREAD_MUTEX_INITIALIZER;  // This mutex protect the access to the TCP/IP buffer. Only one thread at the time should communicate. 
 
 int build_socket(uint16_t port)
 {
@@ -148,7 +151,14 @@ void tcp_comm_close()
 int tcp_send(uint8_t* buf, int len)
 {
 	int timeout = 100;
+	
+	int timestamp = subsec_timestamp();
+	int stamp;
+
+	while(pthread_mutex_lock (&mutex_buf_tcp) == EBUSY &&  timestamp < (stamp=subsec_timestamp()) + 2.0); // We lock this zone so only one thread can send a nessage at the time. 	
+							     // EBUSY means the nutex is already lock, so we try to lock it until it s free. After 2seconds of trying, we give up.
 	uint8_t* p_buf = buf;
+	
 	while(len)
 	{
 		int ret = write(tcp_client_sock, p_buf, (len>50000)?50000:len); // write() is broken with len over about 65536, at least in linux.
@@ -181,6 +191,8 @@ int tcp_send(uint8_t* buf, int len)
 			}
 		}
 	}
+	
+	pthread_mutex_unlock (&mutex_buf_tcp);
 
 	return 0;
 }
